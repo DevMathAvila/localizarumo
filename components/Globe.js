@@ -2,16 +2,17 @@
 
 import React from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { OrbitControls, Stars } from "@react-three/drei";
+import { Html, OrbitControls, Stars } from "@react-three/drei";
 import * as THREE from "three";
 
 const CAMERA_DISTANCE = 255;
+const CAMERA_DISTANCE_FOCUS = 185;
 const DEFAULT_FOCUS = {
   lat: -15.78,
   lng: -53.1
 };
 
-export default function Globe({ units, activeSelection, focusCoordinates }) {
+export default function Globe({ units, activeSelection, focusCoordinates, onUnitClick }) {
   const [countries, setCountries] = React.useState([]);
 
   React.useEffect(() => {
@@ -61,21 +62,22 @@ export default function Globe({ units, activeSelection, focusCoordinates }) {
           units={units}
           activeSelection={activeSelection}
           focusCoordinates={focusCoordinates ?? DEFAULT_FOCUS}
+          onUnitClick={onUnitClick}
         />
       </Canvas>
     </div>
   );
 }
 
-function Scene({ countries, units, activeSelection, focusCoordinates }) {
+function Scene({ countries, units, activeSelection, focusCoordinates, onUnitClick }) {
   const [globe, setGlobe] = React.useState(null);
   const controlsRef = React.useRef(null);
   const shouldAnimateCamera = React.useRef(true);
   const { camera, size } = useThree();
   const orbitTarget = React.useMemo(() => new THREE.Vector3(0, 0, 0), []);
-  const targetCamera = React.useRef(
-    latLngToVector3(DEFAULT_FOCUS.lat, DEFAULT_FOCUS.lng, CAMERA_DISTANCE)
-  );
+  const targetCamera = React.useRef(latLngToVector3(DEFAULT_FOCUS.lat, DEFAULT_FOCUS.lng, CAMERA_DISTANCE));
+  const [labelScale, setLabelScale] = React.useState(1);
+  const [hoveredUnitId, setHoveredUnitId] = React.useState(null);
 
   const countryLabels = React.useMemo(
     () => buildCountryLabels(countries),
@@ -87,9 +89,12 @@ function Scene({ countries, units, activeSelection, focusCoordinates }) {
 
     const mappedUnits = units.map((unit) => ({
       ...unit,
+      pointType: "unit",
+      isSelected: unit.id === selectedUnitId,
       color: unit.id === selectedUnitId ? "#f59e0b" : "#22d3ee",
-      altitude: unit.id === selectedUnitId ? 0.2 : 0.1,
-      radius: unit.id === selectedUnitId ? 0.5 : 0.34,
+      // Mais alto para facilitar hover/click quando há clusters.
+      altitude: unit.id === selectedUnitId ? 0.09 : 0.07,
+      radius: unit.id === selectedUnitId ? 0.28 : 0.19,
       label: `${unit.name} - ${unit.city}/${unit.state}`
     }));
 
@@ -102,11 +107,14 @@ function Scene({ countries, units, activeSelection, focusCoordinates }) {
       {
         id: `origin-${activeSelection.place.id}`,
         name: activeSelection.place.label,
+        city: activeSelection.place.city,
+        state: activeSelection.place.state,
         lat: activeSelection.place.lat,
         lng: activeSelection.place.lng,
+        pointType: "origin",
         color: "#f8fafc",
-        altitude: 0.14,
-        radius: 0.32,
+        altitude: 0.08,
+        radius: 0.2,
         label: `Origem - ${activeSelection.place.label}`
       }
     ];
@@ -239,14 +247,9 @@ function Scene({ countries, units, activeSelection, focusCoordinates }) {
       .labelDotRadius((label) => (label.dot ? 0.12 : 0.04))
       .labelDotOrientation(() => "right")
       .labelResolution(2)
-      .pointsData(points)
-      .pointLat("lat")
-      .pointLng("lng")
-      .pointColor("color")
-      .pointAltitude("altitude")
-      .pointRadius("radius")
-      .pointResolution(12)
-      .pointsMerge(true)
+      // Marcadores de sedes/origem são renderizados por uma camada customizada
+      // (`InteractivePointLayer`) para hover/click e visual mais controlado.
+      .pointsData([])
       .arcsData(arcs)
       .arcColor("color")
       .arcAltitude((arc) => arc.altitude)
@@ -286,11 +289,12 @@ function Scene({ countries, units, activeSelection, focusCoordinates }) {
 
   React.useEffect(() => {
     const target = focusCoordinates ?? DEFAULT_FOCUS;
+    const distance = activeSelection ? CAMERA_DISTANCE_FOCUS : CAMERA_DISTANCE;
     targetCamera.current.copy(
-      getFocusCameraPosition(globe, target.lat, target.lng, CAMERA_DISTANCE)
+      getFocusCameraPosition(globe, target.lat, target.lng, distance)
     );
     shouldAnimateCamera.current = true;
-  }, [focusCoordinates, globe]);
+  }, [activeSelection, focusCoordinates, globe]);
 
   useFrame((_, delta) => {
     if (shouldAnimateCamera.current) {
@@ -312,6 +316,10 @@ function Scene({ countries, units, activeSelection, focusCoordinates }) {
     if (globe) {
       globe.setPointOfView(camera);
     }
+
+    const cameraDistance = camera.position.length();
+    const nextScale = clamp(mapRange(cameraDistance, 120, 420, 0.9, 1.22), 0.85, 1.25);
+    setLabelScale((current) => current + (nextScale - current) * (1 - Math.exp(-delta * 10)));
   });
 
   return (
@@ -331,18 +339,255 @@ function Scene({ countries, units, activeSelection, focusCoordinates }) {
       <pointLight position={[0, 0, 210]} intensity={1.8} color="#38bdf8" />
       <Stars radius={360} depth={60} count={4200} factor={4.2} fade speed={0.7} />
       {globe && <primitive object={globe} />}
+      {globe && (
+        <InteractivePointLayer
+          globe={globe}
+          points={points}
+          onClick={onUnitClick}
+          hoveredUnitId={hoveredUnitId}
+          onHoverUnitId={setHoveredUnitId}
+        />
+      )}
+      {globe ? <UnitLabelLayer globe={globe} points={points} labelScale={labelScale} /> : null}
       <OrbitControls
         ref={controlsRef}
         enablePan={false}
-        minDistance={160}
-        maxDistance={330}
-        rotateSpeed={0.7}
-        zoomSpeed={0.8}
+        minDistance={105}
+        maxDistance={420}
+        enableDamping
+        dampingFactor={0.08}
+        rotateSpeed={0.42}
+        zoomSpeed={0.65}
         autoRotate={!activeSelection}
         autoRotateSpeed={0.28}
+        onStart={() => {
+          shouldAnimateCamera.current = false;
+        }}
+        onChange={() => {
+          shouldAnimateCamera.current = false;
+        }}
       />
     </>
   );
+}
+
+function InteractivePointLayer({ globe, points, onClick, hoveredUnitId, onHoverUnitId }) {
+  const unitMaterial = React.useMemo(
+    () =>
+      new THREE.MeshStandardMaterial({
+        color: new THREE.Color("#ef4444"),
+        emissive: new THREE.Color("#7f1d1d"),
+        emissiveIntensity: 1.35,
+        transparent: true,
+        opacity: 0.92
+      }),
+    []
+  );
+  const hoveredUnitMaterial = React.useMemo(
+    () =>
+      new THREE.MeshStandardMaterial({
+        color: new THREE.Color("#22d3ee"),
+        emissive: new THREE.Color("#67e8f9"),
+        emissiveIntensity: 1.7,
+        transparent: true,
+        opacity: 0.96
+      }),
+    []
+  );
+  const selectedUnitMaterial = React.useMemo(
+    () =>
+      new THREE.MeshStandardMaterial({
+        color: new THREE.Color("#f59e0b"),
+        emissive: new THREE.Color("#fbbf24"),
+        emissiveIntensity: 1.55,
+        transparent: true,
+        opacity: 0.95
+      }),
+    []
+  );
+  const originMaterial = React.useMemo(
+    () =>
+      new THREE.MeshStandardMaterial({
+        color: new THREE.Color("#e2e8f0"),
+        emissive: new THREE.Color("#67e8f9"),
+        emissiveIntensity: 1.4,
+        transparent: true,
+        opacity: 0.92
+      }),
+    []
+  );
+
+  const coreGeometry = React.useMemo(() => new THREE.SphereGeometry(0.62, 18, 18), []);
+  const glowGeometry = React.useMemo(() => new THREE.SphereGeometry(1.35, 18, 18), []);
+  const unitGlowMaterial = React.useMemo(() => {
+    const mat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color("#ef4444"),
+      transparent: true,
+      opacity: 0.14,
+      depthWrite: false
+    });
+    mat.blending = THREE.AdditiveBlending;
+    return mat;
+  }, []);
+  const selectedGlowMaterial = React.useMemo(() => {
+    const mat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color("#f59e0b"),
+      transparent: true,
+      opacity: 0.18,
+      depthWrite: false
+    });
+    mat.blending = THREE.AdditiveBlending;
+    return mat;
+  }, []);
+  const hoveredGlowMaterial = React.useMemo(() => {
+    const mat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color("#22d3ee"),
+      transparent: true,
+      opacity: 0.2,
+      depthWrite: false
+    });
+    mat.blending = THREE.AdditiveBlending;
+    return mat;
+  }, []);
+  const originGlowMaterial = React.useMemo(() => {
+    const mat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color("#67e8f9"),
+      transparent: true,
+      opacity: 0.16,
+      depthWrite: false
+    });
+    mat.blending = THREE.AdditiveBlending;
+    return mat;
+  }, []);
+
+  return (
+    <group>
+      {points.map((point) => {
+        const altitude = Math.max(0.03, point.altitude) + separationNudge(point.id);
+        const coords = globe.getCoords(point.lat, point.lng, altitude);
+        const position = new THREE.Vector3(coords.x, coords.y, coords.z);
+        const isOrigin = point.pointType === "origin";
+        const isUnit = point.pointType === "unit";
+        const isSelected = Boolean(point.isSelected);
+        const isHovered = isUnit && hoveredUnitId === point.id;
+        const coreMaterial = isOrigin
+          ? originMaterial
+          : isHovered
+            ? hoveredUnitMaterial
+            : isSelected
+            ? selectedUnitMaterial
+            : unitMaterial;
+        const glowMaterial = isOrigin
+          ? originGlowMaterial
+          : isHovered
+            ? hoveredGlowMaterial
+            : isSelected
+            ? selectedGlowMaterial
+            : unitGlowMaterial;
+
+        return (
+          <group
+            key={`hover-${point.id}`}
+            position={position}
+          >
+            <mesh
+              geometry={glowGeometry}
+              material={glowMaterial}
+              raycast={() => null}
+              scale={isOrigin ? 0.95 : isSelected || isHovered ? 1.08 : 0.85}
+            />
+            <mesh
+              geometry={coreGeometry}
+              material={coreMaterial}
+              scale={isOrigin ? 0.95 : isSelected || isHovered ? 1.08 : 0.85}
+              onPointerOver={(event) => {
+                if (!isUnit) {
+                  return;
+                }
+                event.stopPropagation();
+                onHoverUnitId?.(point.id);
+                document.body.style.cursor = "pointer";
+              }}
+              onPointerOut={(event) => {
+                if (!isUnit) {
+                  return;
+                }
+                event.stopPropagation();
+                onHoverUnitId?.(null);
+                document.body.style.cursor = "default";
+              }}
+              onClick={(event) => {
+                event.stopPropagation();
+                if (isUnit && typeof onClick === "function") {
+                  onClick(point);
+                }
+              }}
+            />
+          </group>
+        );
+      })}
+    </group>
+  );
+}
+
+function UnitLabelLayer({ globe, points, labelScale }) {
+  const unitPoints = React.useMemo(
+    () => points.filter((point) => point.pointType === "unit"),
+    [points]
+  );
+
+  return (
+    <>
+      {unitPoints.map((point) => {
+        const altitude = Math.max(0.03, point.altitude) + 0.03;
+        const coords = globe.getCoords(point.lat, point.lng, altitude);
+        const position = [coords.x, coords.y, coords.z];
+
+        return (
+          <Html
+            key={`label-${point.id}`}
+            position={position}
+            center
+            style={{
+              pointerEvents: "none",
+              transform: `translate3d(-50%, -140%, 0) scale(${labelScale})`,
+              transformOrigin: "center"
+            }}
+          >
+            <div className="map-label">{point.name}</div>
+          </Html>
+        );
+      })}
+    </>
+  );
+}
+
+function separationNudge(id) {
+  const value = hashStringToUnitInterval(String(id || ""));
+  // 0 .. ~0.008 de separação sutil, evita “pontos colados” sem distorcer o mapa.
+  return value * 0.008;
+}
+
+function hashStringToUnitInterval(input) {
+  let hash = 0;
+  for (let i = 0; i < input.length; i += 1) {
+    hash = (hash * 31 + input.charCodeAt(i)) >>> 0;
+  }
+  return (hash % 1000) / 1000;
+}
+
+function mapRange(value, inMin, inMax, outMin, outMax) {
+  if (!Number.isFinite(value)) {
+    return outMin;
+  }
+
+  const clamped = clamp(value, inMin, inMax);
+  const t = (clamped - inMin) / (inMax - inMin);
+  return outMin + t * (outMax - outMin);
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
 }
 
 function latLngToVector3(lat, lng, radius) {

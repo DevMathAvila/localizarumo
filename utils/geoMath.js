@@ -32,6 +32,26 @@ export function findNearestUnit(origin, availableUnits) {
     .sort((left, right) => left.distanceKm - right.distanceKm)[0];
 }
 
+export function findNearestUnits(origin, availableUnits, count = 3) {
+  if (!origin || !availableUnits?.length) {
+    return [];
+  }
+
+  const limit = Math.max(0, Math.floor(count));
+
+  if (!limit) {
+    return [];
+  }
+
+  return availableUnits
+    .map((unit) => ({
+      unit,
+      distanceKm: haversineDistanceKm(origin, unit)
+    }))
+    .sort((left, right) => left.distanceKm - right.distanceKm)
+    .slice(0, limit);
+}
+
 export function estimateTravelTimeHours(distanceKm, averageSpeedKmh = 60) {
   return distanceKm / averageSpeedKmh;
 }
